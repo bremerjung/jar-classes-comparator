@@ -17,6 +17,7 @@ import org.eclipse.aether.resolution.ArtifactRequest;
 import org.eclipse.aether.resolution.ArtifactResolutionException;
 import org.eclipse.aether.resolution.ArtifactResult;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -261,12 +262,30 @@ public class ResourceDiffMojo extends AbstractMojo {
                 }
 
                 try (InputStream is = jar.getInputStream(entry)) {
-                    contents.put(entry.getName(), is.readAllBytes());
+                    contents.put(entry.getName(), toByteArray(is));
                 }
             }
         }
 
         return contents;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Utility
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Reads all bytes from an InputStream into a byte array.
+     * Compatible with Java 8+ (replacement for InputStream.readAllBytes()).
+     */
+    private byte[] toByteArray(InputStream is) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int bytesRead;
+        while ((bytesRead = is.read(chunk)) != -1) {
+            buffer.write(chunk, 0, bytesRead);
+        }
+        return buffer.toByteArray();
     }
 
     // ------------------------------------------------------------------ //
