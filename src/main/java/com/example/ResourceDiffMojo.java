@@ -29,10 +29,12 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarEntry;
@@ -117,6 +119,58 @@ public class ResourceDiffMojo extends AbstractMojo {
 
     @Parameter(defaultValue = "${project.remoteProjectRepositories}", readonly = true, required = true)
     private List<RemoteRepository> remoteRepositories;
+
+    /**
+     * File extensions that are treated as text files for line-ending normalization.
+     * Files with these extensions will have their line endings normalized
+     * (\r\n and \r → \n) before comparison, so that OS-specific line endings
+     * do not cause false positives.
+     */
+    private static final Set<String> TEXT_EXTENSIONS;
+    static {
+        Set<String> exts = new HashSet<>();
+        exts.add("properties");
+        exts.add("xml");
+        exts.add("xsl");
+        exts.add("xslt");
+        exts.add("xsd");
+        exts.add("dtd");
+        exts.add("html");
+        exts.add("htm");
+        exts.add("xhtml");
+        exts.add("css");
+        exts.add("js");
+        exts.add("json");
+        exts.add("yaml");
+        exts.add("yml");
+        exts.add("txt");
+        exts.add("csv");
+        exts.add("tsv");
+        exts.add("md");
+        exts.add("cfg");
+        exts.add("conf");
+        exts.add("ini");
+        exts.add("sql");
+        exts.add("graphql");
+        exts.add("gql");
+        exts.add("ftl");
+        exts.add("vm");
+        exts.add("jsp");
+        exts.add("jspx");
+        exts.add("tag");
+        exts.add("tld");
+        exts.add("wsdl");
+        exts.add("fxml");
+        exts.add("log");
+        exts.add("sh");
+        exts.add("bat");
+        exts.add("cmd");
+        exts.add("groovy");
+        exts.add("kt");
+        exts.add("scala");
+        exts.add("java");
+        TEXT_EXTENSIONS = Collections.unmodifiableSet(exts);
+    }
 
     // -----------------------------------------------
 
@@ -228,12 +282,22 @@ public class ResourceDiffMojo extends AbstractMojo {
                     // File exists only in target/classes (missing in JAR)
                     getLog().debug("NEW      : " + relativePath);
                     diffPaths.add(relativePath);
-                } else if (!Arrays.equals(localBytes, jarBytes)) {
-                    // File content differs
-                    getLog().debug("MODIFIED : " + relativePath);
-                    diffPaths.add(relativePath);
                 } else {
-                    getLog().debug("UNCHANGED: " + relativePath);
+                    // For text files: normalize line endings before comparison
+                    byte[] localCompare = localBytes;
+                    byte[] jarCompare = jarBytes;
+
+                    if (isTextFile(relativePath)) {
+                        localCompare = normalizeLineEndings(localBytes);
+                        jarCompare = normalizeLineEndings(jarBytes);
+                    }
+
+                    if (!Arrays.equals(localCompare, jarCompare)) {
+                        getLog().debug("MODIFIED : " + relativePath);
+                        diffPaths.add(relativePath);
+                    } else {
+                        getLog().debug("UNCHANGED: " + relativePath);
+                    }
                 }
 
                 return FileVisitResult.CONTINUE;
@@ -273,6 +337,42 @@ public class ResourceDiffMojo extends AbstractMojo {
     // ------------------------------------------------------------------ //
     //  Utility
     // ------------------------------------------------------------------ //
+
+    /**
+     * Determines whether a file should be treated as a text file
+     * based on its extension. Text files have their line endings
+     * normalized before comparison.
+     */
+    private boolean isTextFile(String relativePath) {
+        int dotIndex = relativePath.lastIndexOf('.');
+        if (dotIndex < 0 || dotIndex == relativePath.length() - 1) {
+            return false;
+        }
+        String extension = relativePath.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
+        return TEXT_EXTENSIONS.contains(extension);
+    }
+
+    /**
+     * Normalizes line endings in a byte array:
+     * \r\n (Windows) and standalone \r (old Mac) are replaced with \n (Unix).
+     * This avoids false-positive diffs caused by OS-specific line endings.
+     */
+    private byte[] normalizeLineEndings(byte[] data) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(data.length);
+        for (int i = 0; i < data.length; i++) {
+            byte b = data[i];
+            if (b == '\r') {
+                out.write('\n');
+                // Skip the \n in a \r\n sequence to avoid producing \n\n
+                if (i + 1 < data.length && data[i + 1] == '\n') {
+                    i++;
+                }
+            } else {
+                out.write(b);
+            }
+        }
+        return out.toByteArray();
+    }
 
     /**
      * Reads all bytes from an InputStream into a byte array.
