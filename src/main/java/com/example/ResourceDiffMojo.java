@@ -50,8 +50,7 @@ import org.eclipse.jgit.diff.RawTextComparator;
  * Maven-Repository-Aufloesung bezogen wird.
  * <p>
  * Dateien, die sich unterscheiden oder nur lokal vorhanden sind,
- * werden in ein ZIP-Archiv gepackt. .class-Dateien werden beim
- * Vergleich ignoriert.
+ * werden in ein ZIP-Archiv gepackt.
  * </p>
  * <p>
  * Die groupId und artifactId des zu vergleichenden Artefakts werden
@@ -211,9 +210,6 @@ public class ResourceDiffMojo extends AbstractMojo {
     /**
      * Ermittelt, welche Ressource-Dateien in {@code classesDir} sich von
      * denen im uebergebenen JAR unterscheiden oder nur lokal vorhanden sind.
-     * <p>
-     * .class-Dateien werden vom Vergleich ausgeschlossen.
-     * </p>
      *
      * @param classesDir das lokale classes-Verzeichnis (target/classes)
      * @param jarFile    die aufgeloeste JAR-Datei zum Vergleich
@@ -227,16 +223,11 @@ public class ResourceDiffMojo extends AbstractMojo {
         // Alle Eintraege aus dem JAR in den Speicher lesen (Byte-Arrays)
         Map<String, byte[]> jarContents = readJarResources(jarFile);
 
-        // target/classes durchlaufen und jede Nicht-.class-Datei vergleichen
+        // target/classes durchlaufen und jede Datei vergleichen
         Files.walkFileTree(classesDir, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String relativePath = classesDir.relativize(file).toString().replace('\\', '/');
-
-                // .class-Dateien ueberspringen
-                if (relativePath.endsWith(".class")) {
-                    return FileVisitResult.CONTINUE;
-                }
 
                 byte[] localBytes = Files.readAllBytes(file);
                 byte[] jarBytes = jarContents.get(relativePath);
@@ -261,7 +252,7 @@ public class ResourceDiffMojo extends AbstractMojo {
     }
 
     /**
-     * Liest alle Nicht-.class-Eintraege aus einer JAR-Datei in eine Map
+     * Liest alle Eintraege aus einer JAR-Datei in eine Map
      * (relativer Pfad → Byte-Inhalt).
      *
      * @param jarFile die zu lesende JAR-Datei
@@ -277,8 +268,8 @@ public class ResourceDiffMojo extends AbstractMojo {
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
 
-                // Verzeichnisse und .class-Dateien ueberspringen
-                if (entry.isDirectory() || entry.getName().endsWith(".class")) {
+                // Verzeichnisse ueberspringen
+                if (entry.isDirectory()) {
                     continue;
                 }
 
