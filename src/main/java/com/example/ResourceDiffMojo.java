@@ -19,7 +19,6 @@ import org.eclipse.aether.resolution.ArtifactResult;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,12 +28,10 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarEntry;
@@ -42,20 +39,27 @@ import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.eclipse.jgit.diff.EditList;
+import org.eclipse.jgit.diff.HistogramDiff;
+import org.eclipse.jgit.diff.RawText;
+import org.eclipse.jgit.diff.RawTextComparator;
+
 /**
- * Maven Plugin (Mojo) that compares resources in target/classes with
- * resources from a JAR artifact resolved via Maven repositories.
+ * Maven-Plugin (Mojo), das die Ressourcen im Verzeichnis target/classes
+ * mit den Ressourcen aus einem JAR-Artefakt vergleicht, das ueber die
+ * Maven-Repository-Aufloesung bezogen wird.
  * <p>
- * Files that differ (or exist only in target/classes) are packaged
- * into a ZIP archive. .class files are excluded from the comparison.
+ * Dateien, die sich unterscheiden oder nur lokal vorhanden sind,
+ * werden in ein ZIP-Archiv gepackt. .class-Dateien werden beim
+ * Vergleich ignoriert.
  * </p>
  * <p>
- * The groupId and artifactId of the artifact to compare against are
- * read from the current project's POM. The version can be overridden
- * via a parameter; by default the project's own version is used.
+ * Die groupId und artifactId des zu vergleichenden Artefakts werden
+ * aus dem aktuellen Projekt ausgelesen. Die Version kann per Parameter
+ * ueberschrieben werden; standardmaessig wird die Projektversion verwendet.
  * </p>
  *
- * <p>Usage in a POM:</p>
+ * <p>Verwendung in einer POM:</p>
  * <pre>{@code
  * <plugin>
  *   <groupId>com.example.maven</groupId>
@@ -69,7 +73,7 @@ import java.util.zip.ZipOutputStream;
  *     </execution>
  *   </executions>
  *   <configuration>
- *     <!-- optional: override the version to compare against -->
+ *     <!-- Optional: Version zum Vergleich angeben -->
  *     <compareVersion>1.0.0</compareVersion>
  *   </configuration>
  * </plugin>
@@ -79,37 +83,38 @@ import java.util.zip.ZipOutputStream;
 public class ResourceDiffMojo extends AbstractMojo {
 
     /**
-     * The current Maven project. Used to read groupId, artifactId, and version.
+     * Das aktuelle Maven-Projekt. Wird verwendet, um groupId, artifactId
+     * und Version auszulesen.
      */
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
     /**
-     * The version of the artifact to compare against.
-     * If not specified, the project's own version is used.
+     * Die Version des Artefakts, gegen das verglichen werden soll.
+     * Wird dieser Parameter nicht angegeben, wird die Projektversion verwendet.
      */
     @Parameter(property = "resourcediff.compareVersion")
     private String compareVersion;
 
     /**
-     * The build output directory (typically target/classes).
+     * Das Build-Ausgabeverzeichnis (typischerweise target/classes).
      */
     @Parameter(defaultValue = "${project.build.outputDirectory}", readonly = true, required = true)
     private File classesDirectory;
 
     /**
-     * The build directory (typically target/).
+     * Das Build-Verzeichnis (typischerweise target/).
      */
     @Parameter(defaultValue = "${project.build.directory}", readonly = true, required = true)
     private File buildDirectory;
 
     /**
-     * The name of the output ZIP file.
+     * Der Name der Ausgabe-ZIP-Datei.
      */
     @Parameter(defaultValue = "resource-diff.zip", property = "resourcediff.outputFileName")
     private String outputFileName;
 
-    // -- Aether components for artifact resolution --
+    // -- Aether-Komponenten fuer die Artefakt-Aufloesung --
 
     @Component
     private RepositorySystem repoSystem;
@@ -120,112 +125,66 @@ public class ResourceDiffMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.remoteProjectRepositories}", readonly = true, required = true)
     private List<RemoteRepository> remoteRepositories;
 
-    /**
-     * File extensions that are treated as text files for line-ending normalization.
-     * Files with these extensions will have their line endings normalized
-     * (\r\n and \r → \n) before comparison, so that OS-specific line endings
-     * do not cause false positives.
-     */
-    private static final Set<String> TEXT_EXTENSIONS;
-    static {
-        Set<String> exts = new HashSet<>();
-        exts.add("properties");
-        exts.add("xml");
-        exts.add("xsl");
-        exts.add("xslt");
-        exts.add("xsd");
-        exts.add("dtd");
-        exts.add("html");
-        exts.add("htm");
-        exts.add("xhtml");
-        exts.add("css");
-        exts.add("js");
-        exts.add("json");
-        exts.add("yaml");
-        exts.add("yml");
-        exts.add("txt");
-        exts.add("csv");
-        exts.add("tsv");
-        exts.add("md");
-        exts.add("cfg");
-        exts.add("conf");
-        exts.add("ini");
-        exts.add("sql");
-        exts.add("graphql");
-        exts.add("gql");
-        exts.add("ftl");
-        exts.add("vm");
-        exts.add("jsp");
-        exts.add("jspx");
-        exts.add("tag");
-        exts.add("tld");
-        exts.add("wsdl");
-        exts.add("fxml");
-        exts.add("log");
-        exts.add("sh");
-        exts.add("bat");
-        exts.add("cmd");
-        exts.add("groovy");
-        exts.add("kt");
-        exts.add("scala");
-        exts.add("java");
-        TEXT_EXTENSIONS = Collections.unmodifiableSet(exts);
-    }
-
     // -----------------------------------------------
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
 
-        // 1. Determine coordinates
+        // 1. Koordinaten ermitteln
         String groupId = project.getGroupId();
         String artifactId = project.getArtifactId();
         String version = (compareVersion != null && !compareVersion.trim().isEmpty())
                 ? compareVersion.trim()
                 : project.getVersion();
 
-        getLog().info("Resource-Diff: comparing target/classes against artifact "
+        getLog().info("Resource-Diff: Vergleiche target/classes mit Artefakt "
                 + groupId + ":" + artifactId + ":" + version);
 
-        // 2. Resolve the JAR from the repository
+        // 2. JAR aus dem Repository aufloesen
         File jarFile = resolveArtifact(groupId, artifactId, version);
-        getLog().info("Resolved artifact JAR: " + jarFile.getAbsolutePath());
+        getLog().info("Artefakt-JAR aufgeloest: " + jarFile.getAbsolutePath());
 
-        // 3. Validate that target/classes exists
+        // 3. Pruefen, ob target/classes existiert
         if (!classesDirectory.isDirectory()) {
             throw new MojoFailureException(
-                    "Classes directory does not exist: " + classesDirectory.getAbsolutePath()
-                            + " – did you run 'compile' first?");
+                    "Classes-Verzeichnis existiert nicht: " + classesDirectory.getAbsolutePath()
+                            + " – wurde 'compile' ausgefuehrt?");
         }
 
-        // 4. Perform the diff
+        // 4. Vergleich durchfuehren
         try {
             Set<String> diffFiles = computeDiff(classesDirectory.toPath(), jarFile);
 
             if (diffFiles.isEmpty()) {
-                getLog().info("No differences found – no ZIP will be created.");
+                getLog().info("Keine Unterschiede gefunden – es wird kein ZIP erstellt.");
                 return;
             }
 
-            getLog().info("Found " + diffFiles.size() + " differing file(s).");
+            getLog().info(diffFiles.size() + " abweichende Datei(en) gefunden.");
 
-            // 5. Create the ZIP
+            // 5. ZIP erstellen
             File zipFile = new File(buildDirectory, outputFileName);
             createZip(classesDirectory.toPath(), diffFiles, zipFile);
 
-            getLog().info("Diff ZIP created: " + zipFile.getAbsolutePath());
+            getLog().info("Diff-ZIP erstellt: " + zipFile.getAbsolutePath());
 
         } catch (IOException e) {
-            throw new MojoExecutionException("Error during resource diff", e);
+            throw new MojoExecutionException("Fehler beim Ressourcen-Vergleich", e);
         }
     }
 
     // ------------------------------------------------------------------ //
-    //  Artifact resolution via Aether / Maven Repository System
+    //  Artefakt-Aufloesung ueber Aether / Maven Repository System
     // ------------------------------------------------------------------ //
 
     /**
-     * Resolves a JAR artifact from the configured Maven repositories.
+     * Loest ein JAR-Artefakt ueber die konfigurierten Maven-Repositories auf.
+     *
+     * @param groupId    die GroupId des Artefakts
+     * @param artifactId die ArtifactId des Artefakts
+     * @param version    die Version des Artefakts
+     * @return die aufgeloeste JAR-Datei im lokalen Repository
+     * @throws MojoExecutionException falls das Artefakt nicht aufgeloest werden kann
      */
     private File resolveArtifact(String groupId, String artifactId, String version)
             throws MojoExecutionException {
@@ -240,37 +199,41 @@ public class ResourceDiffMojo extends AbstractMojo {
             return result.getArtifact().getFile();
         } catch (ArtifactResolutionException e) {
             throw new MojoExecutionException(
-                    "Could not resolve artifact " + groupId + ":" + artifactId + ":" + version, e);
+                    "Artefakt konnte nicht aufgeloest werden: "
+                            + groupId + ":" + artifactId + ":" + version, e);
         }
     }
 
     // ------------------------------------------------------------------ //
-    //  Diff logic
+    //  Diff-Logik
     // ------------------------------------------------------------------ //
 
     /**
-     * Computes which resource files in {@code classesDir} differ from
-     * (or are missing in) the given JAR.
+     * Ermittelt, welche Ressource-Dateien in {@code classesDir} sich von
+     * denen im uebergebenen JAR unterscheiden oder nur lokal vorhanden sind.
      * <p>
-     * .class files are excluded from comparison.
+     * .class-Dateien werden vom Vergleich ausgeschlossen.
      * </p>
      *
-     * @return set of relative paths (using "/" as separator) of differing files
+     * @param classesDir das lokale classes-Verzeichnis (target/classes)
+     * @param jarFile    die aufgeloeste JAR-Datei zum Vergleich
+     * @return Menge der relativen Pfade (mit "/" als Separator) abweichender Dateien
+     * @throws IOException bei Lese- oder Dateisystemfehlern
      */
     private Set<String> computeDiff(Path classesDir, File jarFile) throws IOException {
 
         Set<String> diffPaths = new HashSet<>();
 
-        // Read all entries from the JAR into memory (byte arrays)
+        // Alle Eintraege aus dem JAR in den Speicher lesen (Byte-Arrays)
         Map<String, byte[]> jarContents = readJarResources(jarFile);
 
-        // Walk target/classes and compare each non-.class file
+        // target/classes durchlaufen und jede Nicht-.class-Datei vergleichen
         Files.walkFileTree(classesDir, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String relativePath = classesDir.relativize(file).toString().replace('\\', '/');
 
-                // Skip .class files
+                // .class-Dateien ueberspringen
                 if (relativePath.endsWith(".class")) {
                     return FileVisitResult.CONTINUE;
                 }
@@ -279,25 +242,15 @@ public class ResourceDiffMojo extends AbstractMojo {
                 byte[] jarBytes = jarContents.get(relativePath);
 
                 if (jarBytes == null) {
-                    // File exists only in target/classes (missing in JAR)
-                    getLog().debug("NEW      : " + relativePath);
+                    // Datei existiert nur in target/classes (fehlt im JAR)
+                    getLog().debug("NEU       : " + relativePath);
+                    diffPaths.add(relativePath);
+                } else if (!contentEquals(localBytes, jarBytes)) {
+                    // Dateiinhalt unterscheidet sich
+                    getLog().debug("GEAENDERT : " + relativePath);
                     diffPaths.add(relativePath);
                 } else {
-                    // For text files: normalize line endings before comparison
-                    byte[] localCompare = localBytes;
-                    byte[] jarCompare = jarBytes;
-
-                    if (isTextFile(relativePath)) {
-                        localCompare = normalizeLineEndings(localBytes);
-                        jarCompare = normalizeLineEndings(jarBytes);
-                    }
-
-                    if (!Arrays.equals(localCompare, jarCompare)) {
-                        getLog().debug("MODIFIED : " + relativePath);
-                        diffPaths.add(relativePath);
-                    } else {
-                        getLog().debug("UNCHANGED: " + relativePath);
-                    }
+                    getLog().debug("UNVERAEND.: " + relativePath);
                 }
 
                 return FileVisitResult.CONTINUE;
@@ -308,8 +261,12 @@ public class ResourceDiffMojo extends AbstractMojo {
     }
 
     /**
-     * Reads all non-.class entries from a JAR file into a map
-     * of relative-path → byte-content.
+     * Liest alle Nicht-.class-Eintraege aus einer JAR-Datei in eine Map
+     * (relativer Pfad → Byte-Inhalt).
+     *
+     * @param jarFile die zu lesende JAR-Datei
+     * @return Map mit relativem Pfad als Schluessel und Dateiinhalt als Byte-Array
+     * @throws IOException bei Lesefehlern
      */
     private Map<String, byte[]> readJarResources(File jarFile) throws IOException {
 
@@ -320,7 +277,7 @@ public class ResourceDiffMojo extends AbstractMojo {
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
 
-                // Skip directories and .class files
+                // Verzeichnisse und .class-Dateien ueberspringen
                 if (entry.isDirectory() || entry.getName().endsWith(".class")) {
                     continue;
                 }
@@ -335,48 +292,54 @@ public class ResourceDiffMojo extends AbstractMojo {
     }
 
     // ------------------------------------------------------------------ //
-    //  Utility
+    //  Hilfsmethoden
     // ------------------------------------------------------------------ //
 
     /**
-     * Determines whether a file should be treated as a text file
-     * based on its extension. Text files have their line endings
-     * normalized before comparison.
+     * Vergleicht zwei Byte-Arrays auf inhaltliche Gleichheit.
+     * <p>
+     * Nutzt JGits {@link RawText#isBinary(byte[])} zur Erkennung von Binaerdateien:
+     * <ul>
+     *   <li><b>Binaerdateien</b>: strikter Byte-fuer-Byte-Vergleich
+     *       ueber {@link Arrays#equals}</li>
+     *   <li><b>Textdateien</b>: zeilenweiser Vergleich mit JGits {@link HistogramDiff}
+     *       und {@link RawTextComparator#WS_IGNORE_TRAILING}. Dadurch werden
+     *       \r\n und \n als gleichwertig behandelt (nachgestellte Whitespace-Zeichen
+     *       inkl. \r werden ignoriert)</li>
+     * </ul>
+     * Damit entfaellt die Pflege einer manuellen Liste von Textdatei-Endungen.
+     * </p>
+     *
+     * @param localBytes Byte-Inhalt der lokalen Datei (target/classes)
+     * @param jarBytes   Byte-Inhalt der Datei aus dem JAR
+     * @return {@code true} wenn die Inhalte als gleich gelten, sonst {@code false}
      */
-    private boolean isTextFile(String relativePath) {
-        int dotIndex = relativePath.lastIndexOf('.');
-        if (dotIndex < 0 || dotIndex == relativePath.length() - 1) {
+    private boolean contentEquals(byte[] localBytes, byte[] jarBytes) {
+        // Schneller Pfad: byte-identische Dateien
+        if (Arrays.equals(localBytes, jarBytes)) {
+            return true;
+        }
+
+        // Falls eine Seite binaer ist: exakter Byte-Vergleich erforderlich
+        // (der oben bereits fehlgeschlagen ist)
+        if (RawText.isBinary(localBytes) || RawText.isBinary(jarBytes)) {
             return false;
         }
-        String extension = relativePath.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
-        return TEXT_EXTENSIONS.contains(extension);
+
+        // Text-Vergleich: Zeilenende-Unterschiede (\r\n vs. \n) ignorieren
+        RawText localText = new RawText(localBytes);
+        RawText jarText = new RawText(jarBytes);
+        EditList edits = new HistogramDiff().diff(RawTextComparator.WS_IGNORE_TRAILING, localText, jarText);
+        return edits.isEmpty();
     }
 
     /**
-     * Normalizes line endings in a byte array:
-     * \r\n (Windows) and standalone \r (old Mac) are replaced with \n (Unix).
-     * This avoids false-positive diffs caused by OS-specific line endings.
-     */
-    private byte[] normalizeLineEndings(byte[] data) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(data.length);
-        for (int i = 0; i < data.length; i++) {
-            byte b = data[i];
-            if (b == '\r') {
-                out.write('\n');
-                // Skip the \n in a \r\n sequence to avoid producing \n\n
-                if (i + 1 < data.length && data[i + 1] == '\n') {
-                    i++;
-                }
-            } else {
-                out.write(b);
-            }
-        }
-        return out.toByteArray();
-    }
-
-    /**
-     * Reads all bytes from an InputStream into a byte array.
-     * Compatible with Java 8+ (replacement for InputStream.readAllBytes()).
+     * Liest alle Bytes aus einem InputStream in ein Byte-Array.
+     * Kompatibel mit Java 8+ (Ersatz fuer InputStream.readAllBytes()).
+     *
+     * @param is der zu lesende InputStream
+     * @return der vollstaendige Inhalt als Byte-Array
+     * @throws IOException bei Lesefehlern
      */
     private byte[] toByteArray(InputStream is) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -389,23 +352,29 @@ public class ResourceDiffMojo extends AbstractMojo {
     }
 
     // ------------------------------------------------------------------ //
-    //  ZIP creation
+    //  ZIP-Erstellung
     // ------------------------------------------------------------------ //
 
     /**
-     * Creates a ZIP archive containing only the files whose relative paths
-     * are in {@code relativePaths}, taken from {@code classesDir}.
+     * Erstellt ein ZIP-Archiv, das nur die Dateien enthaelt, deren relative
+     * Pfade in {@code relativePaths} aufgefuehrt sind. Die Dateien werden
+     * aus {@code classesDir} gelesen.
+     *
+     * @param classesDir    das Quellverzeichnis (target/classes)
+     * @param relativePaths Menge der relativen Pfade der zu packenden Dateien
+     * @param zipFile       die zu erstellende ZIP-Datei
+     * @throws IOException bei Schreib- oder Dateisystemfehlern
      */
     private void createZip(Path classesDir, Set<String> relativePaths, File zipFile) throws IOException {
 
-        // Ensure parent directory exists
+        // Sicherstellen, dass das Elternverzeichnis existiert
         zipFile.getParentFile().mkdirs();
 
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
             for (String relPath : relativePaths) {
                 Path sourceFile = classesDir.resolve(relPath);
                 if (!Files.exists(sourceFile)) {
-                    getLog().warn("File vanished before zipping: " + relPath);
+                    getLog().warn("Datei vor dem Packen verschwunden: " + relPath);
                     continue;
                 }
 
