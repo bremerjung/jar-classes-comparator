@@ -5,14 +5,15 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.example.maven</groupId>
-    <artifactId>resource-diff-maven-plugin</artifactId>
+    <artifactId>hotpatch-maven-plugin</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>maven-plugin</packaging>
 
-    <name>Resource Diff Maven Plugin</name>
+    <name>Hotpatch Maven Plugin</name>
     <description>
-        Compares resources in target/classes with those from a JAR artifact
-        resolved via Maven repositories and creates a ZIP archive of differing files.
+        Vergleicht den Inhalt von target/classes mit einem JAR-Artefakt
+        aus dem Maven-Repository und erstellt ein ZIP-Archiv (Hotpatch)
+        der abweichenden Dateien.
     </description>
 
     <properties>
@@ -31,7 +32,7 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Maven Plugin Annotations (for @Mojo, @Parameter etc.) -->
+        <!-- Maven Plugin Annotations (fuer @Mojo, @Parameter etc.) -->
         <dependency>
             <groupId>org.apache.maven.plugin-tools</groupId>
             <artifactId>maven-plugin-annotations</artifactId>
@@ -39,7 +40,7 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Maven Project Model (access to MavenProject) -->
+        <!-- Maven Project Model (Zugriff auf MavenProject) -->
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-core</artifactId>
@@ -61,7 +62,7 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- JGit – used for binary detection and line-ending-agnostic text comparison -->
+        <!-- JGit – fuer Binaererkennung und zeilenende-toleranten Textvergleich -->
         <dependency>
             <groupId>org.eclipse.jgit</groupId>
             <artifactId>org.eclipse.jgit</artifactId>
