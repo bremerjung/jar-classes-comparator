@@ -8,6 +8,8 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
+import org.codehaus.plexus.util.DirectoryScanner;
+import org.codehaus.plexus.util.SelectorUtils;
 import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
 import org.eclipse.aether.artifact.Artifact;
@@ -22,11 +24,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -51,7 +50,10 @@ import org.eclipse.jgit.diff.RawTextComparator;
  * (Hotpatch) erstellt.
  * <p>
  * Dateien, die sich unterscheiden oder nur lokal vorhanden sind,
- * werden in das Hotpatch-ZIP aufgenommen.
+ * werden in das Hotpatch-ZIP aufgenommen. Dateien, die von Mavens
+ * Standard-Excludes abgedeckt werden (z.B. SCM-Metadaten wie .git/,
+ * .svn/, CVS/ oder temporaere Dateien), werden beim Vergleich
+ * automatisch uebersprungen.
  * </p>
  * <p>
  * Die groupId und artifactId des zu vergleichenden Artefakts werden
@@ -153,7 +155,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
 
         // 4. Vergleich durchfuehren
         try {
-            Set<String> diffFiles = computeDiff(classesDirectory.toPath(), jarFile);
+            Set<String> diffFiles = computeDiff(classesDirectory, jarFile);
 
             if (diffFiles.isEmpty()) {
                 getLog().info("Keine Unterschiede gefunden – es wird kein Hotpatch erstellt.");
@@ -211,43 +213,57 @@ public class HotPatchMakerMojo extends AbstractMojo {
     /**
      * Ermittelt, welche Dateien in {@code classesDir} sich von denen im
      * uebergebenen JAR unterscheiden oder nur lokal vorhanden sind.
+     * <p>
+     * Zum Scannen der lokalen Dateien wird {@link DirectoryScanner} aus
+     * Plexus Utils verwendet. Ueber {@code addDefaultExcludes()} werden
+     * Mavens Standard-Excludes (SCM-Metadaten, temporaere Dateien etc.)
+     * automatisch vom Vergleich ausgeschlossen.
+     * </p>
      *
      * @param classesDir das lokale classes-Verzeichnis (target/classes)
      * @param jarFile    die aufgeloeste JAR-Datei zum Vergleich
      * @return Menge der relativen Pfade (mit "/" als Separator) abweichender Dateien
      * @throws IOException bei Lese- oder Dateisystemfehlern
      */
-    private Set<String> computeDiff(Path classesDir, File jarFile) throws IOException {
+    private Set<String> computeDiff(File classesDir, File jarFile) throws IOException {
 
         Set<String> diffPaths = new HashSet<>();
 
-        // Alle Eintraege aus dem JAR in den Speicher lesen (Byte-Arrays)
+        // Alle Eintraege aus dem JAR in den Speicher lesen (Byte-Arrays),
+        // dabei Standard-Excludes anwenden
         Map<String, byte[]> jarContents = readJarContents(jarFile);
 
-        // target/classes durchlaufen und jede Datei vergleichen
-        Files.walkFileTree(classesDir, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                String relativePath = classesDir.relativize(file).toString().replace('\\', '/');
+        // target/classes mit DirectoryScanner durchlaufen;
+        // Standard-Excludes (SCM-Metadaten, temp. Dateien etc.) werden
+        // automatisch uebersprungen
+        DirectoryScanner scanner = new DirectoryScanner();
+        scanner.setBasedir(classesDir);
+        scanner.setIncludes(new String[]{"**"});
+        scanner.addDefaultExcludes();
+        scanner.scan();
 
-                byte[] localBytes = Files.readAllBytes(file);
-                byte[] jarBytes = jarContents.get(relativePath);
+        Path classesPath = classesDir.toPath();
 
-                if (jarBytes == null) {
-                    // Datei existiert nur in target/classes (fehlt im JAR)
-                    getLog().debug("NEU       : " + relativePath);
-                    diffPaths.add(relativePath);
-                } else if (!contentEquals(localBytes, jarBytes)) {
-                    // Dateiinhalt unterscheidet sich
-                    getLog().debug("GEAENDERT : " + relativePath);
-                    diffPaths.add(relativePath);
-                } else {
-                    getLog().debug("UNVERAEND.: " + relativePath);
-                }
+        for (String includedFile : scanner.getIncludedFiles()) {
+            // DirectoryScanner liefert plattformabhaengige Separatoren;
+            // fuer den Vergleich mit JAR-Eintraegen auf "/" normalisieren
+            String relativePath = includedFile.replace('\\', '/');
 
-                return FileVisitResult.CONTINUE;
+            byte[] localBytes = Files.readAllBytes(classesPath.resolve(includedFile));
+            byte[] jarBytes = jarContents.get(relativePath);
+
+            if (jarBytes == null) {
+                // Datei existiert nur in target/classes (fehlt im JAR)
+                getLog().debug("NEU       : " + relativePath);
+                diffPaths.add(relativePath);
+            } else if (!contentEquals(localBytes, jarBytes)) {
+                // Dateiinhalt unterscheidet sich
+                getLog().debug("GEAENDERT : " + relativePath);
+                diffPaths.add(relativePath);
+            } else {
+                getLog().debug("UNVERAEND.: " + relativePath);
             }
-        });
+        }
 
         return diffPaths;
     }
@@ -255,6 +271,11 @@ public class HotPatchMakerMojo extends AbstractMojo {
     /**
      * Liest alle Eintraege aus einer JAR-Datei in eine Map
      * (relativer Pfad → Byte-Inhalt).
+     * <p>
+     * Eintraege, die von Mavens Standard-Excludes erfasst werden,
+     * werden uebersprungen. Dazu wird jeder JAR-Eintrag gegen die
+     * Patterns aus {@link DirectoryScanner#DEFAULTEXCLUDES} geprueft.
+     * </p>
      *
      * @param jarFile die zu lesende JAR-Datei
      * @return Map mit relativem Pfad als Schluessel und Dateiinhalt als Byte-Array
@@ -274,6 +295,12 @@ public class HotPatchMakerMojo extends AbstractMojo {
                     continue;
                 }
 
+                // Standard-Excludes auf JAR-Eintraege anwenden
+                if (isDefaultExcluded(entry.getName())) {
+                    getLog().debug("EXCLUDE   : " + entry.getName());
+                    continue;
+                }
+
                 try (InputStream is = jar.getInputStream(entry)) {
                     contents.put(entry.getName(), toByteArray(is));
                 }
@@ -286,6 +313,27 @@ public class HotPatchMakerMojo extends AbstractMojo {
     // ------------------------------------------------------------------ //
     //  Hilfsmethoden
     // ------------------------------------------------------------------ //
+
+    /**
+     * Prueft, ob ein relativer Pfad von Mavens Standard-Excludes erfasst wird.
+     * <p>
+     * Verwendet {@link SelectorUtils#matchPath(String, String)} aus Plexus Utils,
+     * um den Pfad gegen jedes Pattern aus {@link DirectoryScanner#DEFAULTEXCLUDES}
+     * zu testen. Damit wird dieselbe Exclude-Logik wie beim {@link DirectoryScanner}
+     * auf JAR-Eintraege angewendet.
+     * </p>
+     *
+     * @param relativePath der zu pruefende relative Pfad (mit "/" als Separator)
+     * @return {@code true} wenn der Pfad ausgeschlossen werden soll
+     */
+    private boolean isDefaultExcluded(String relativePath) {
+        for (String pattern : DirectoryScanner.DEFAULTEXCLUDES) {
+            if (SelectorUtils.matchPath(pattern, relativePath)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * Vergleicht zwei Byte-Arrays auf inhaltliche Gleichheit.
