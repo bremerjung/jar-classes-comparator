@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  IT-Szenario 04 – CRLF vs. LF wird ignoriert
+  ─────────────────────────────────────────────────────────────────────────
+  Das Fixture-JAR enthält META-INF/app.properties mit Windows-Zeilenenden
+  (\r\n). Das Projekt liefert dieselbe Datei mit Unix-Zeilenenden (\n).
+  Das Hotpatch-Plugin soll den Unterschied durch WS_IGNORE_TRAILING als
+  gleichwertig erkennen → kein ZIP wird erstellt.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.it</groupId>
+  <artifactId>scenario-04-crlf-ignored</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <hotpatch.compareVersion>1.0.0</hotpatch.compareVersion>
+  </properties>
+
+  <build>
+    <!--
+      Maven's resource-filtering darf die Datei nicht anfassen –
+      wir wollen den exakten Byte-Inhalt kontrollieren.
+    -->
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+
+    <plugins>
+
+      <!--
+        Schritt 1a: CRLF-Version der Datei per Ant erzeugen und
+                    ins fixture-jar-src-Verzeichnis schreiben.
+        Schritt 1b: LF-Version ins src/main/resources legen.
+        Beide Schritte laufen in der generate-resources-Phase, bevor
+        das Fixture-JAR installiert und der Hotpatch erzeugt wird.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+
+          <!-- CRLF-Datei für das Fixture-JAR erzeugen -->
+          <execution>
+            <id>create-crlf-fixture</id>
+            <phase>generate-resources</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <mkdir dir="${project.basedir}/fixture-jar-src/META-INF"/>
+                <echo file="${project.basedir}/fixture-jar-src/META-INF/app.properties"
+                      encoding="UTF-8">app.name=hotpatch-it
+app.env=production
+</echo>
+                <!-- Zeilenenden auf CRLF umstellen -->
+                <fixcrlf
+                  srcdir="${project.basedir}/fixture-jar-src/META-INF"
+                  includes="app.properties"
+                  eol="crlf"
+                  encoding="UTF-8"/>
+              </target>
+            </configuration>
+          </execution>
+
+          <!-- LF-Datei für src/main/resources erzeugen -->
+          <execution>
+            <id>create-lf-resource</id>
+            <phase>generate-resources</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <mkdir dir="${project.basedir}/src/main/resources/META-INF"/>
+                <echo file="${project.basedir}/src/main/resources/META-INF/app.properties"
+                      encoding="UTF-8">app.name=hotpatch-it
+app.env=production
+</echo>
+                <fixcrlf
+                  srcdir="${project.basedir}/src/main/resources/META-INF"
+                  includes="app.properties"
+                  eol="lf"
+                  encoding="UTF-8"/>
+              </target>
+            </configuration>
+          </execution>
+
+          <!-- Fixture-JAR aus dem CRLF-Quellverzeichnis bauen -->
+          <execution>
+            <id>build-fixture-jar</id>
+            <phase>generate-resources</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <jar destfile="${project.basedir}/fixture.jar">
+                  <fileset dir="${project.basedir}/fixture-jar-src"/>
+                </jar>
+              </target>
+            </configuration>
+          </execution>
+
+        </executions>
+      </plugin>
+
+      <!-- Fixture-JAR ins lokale Repo installieren -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-install-plugin</artifactId>
+        <version>3.1.1</version>
+        <executions>
+          <execution>
+            <id>install-fixture-jar</id>
+            <phase>initialize</phase>
+            <goals><goal>install-file</goal></goals>
+            <configuration>
+              <file>${project.basedir}/fixture.jar</file>
+              <groupId>com.example.it</groupId>
+              <artifactId>scenario-04-crlf-ignored</artifactId>
+              <version>1.0.0</version>
+              <packaging>jar</packaging>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Hotpatch-Plugin ausführen -->
+      <plugin>
+        <groupId>com.example.maven</groupId>
+        <artifactId>hotpatch-maven-plugin</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <executions>
+          <execution>
+            <goals><goal>make-hotpatch</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <compareVersion>${hotpatch.compareVersion}</compareVersion>
+        </configuration>
+      </plugin>
+
+    </plugins>
+  </build>
+</project>

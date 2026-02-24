@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.maven</groupId>
+  <artifactId>hotpatch-maven-plugin</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>maven-plugin</packaging>
+
+  <name>hotpatch-maven-plugin</name>
+
+  <properties>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!-- Steuert, welche IT-Szenarien ausgeführt werden -->
+    <invoker.test>*</invoker.test>
+  </properties>
+
+  <dependencies>
+    <!-- Maven Plugin API -->
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-plugin-api</artifactId>
+      <version>3.9.6</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven.plugin-tools</groupId>
+      <artifactId>maven-plugin-annotations</artifactId>
+      <version>3.11.0</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-core</artifactId>
+      <version>3.9.6</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Aether (Maven Artifact Resolution) -->
+    <dependency>
+      <groupId>org.eclipse.aether</groupId>
+      <artifactId>aether-api</artifactId>
+      <version>1.1.0</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- JGit (für Diff / contentEquals) -->
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit</artifactId>
+      <version>6.8.0.202311291450-r</version>
+    </dependency>
+
+    <!-- Plexus Utils (DirectoryScanner, SelectorUtils) -->
+    <dependency>
+      <groupId>org.codehaus.plexus</groupId>
+      <artifactId>plexus-utils</artifactId>
+      <version>3.5.1</version>
+    </dependency>
+
+    <!-- ───── Test ───── -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.25.3</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+
+      <!-- 0. Plugin-Descriptor generieren -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-plugin-plugin</artifactId>
+        <version>3.11.0</version>
+      </plugin>
+
+      <!-- 1. Fixture-JARs vor dem Invoker erstellen -->
+      <!--    Jedes IT-Projekt liefert unter fixture-jar-src/ die Klassen,
+              die ins Vergleichs-JAR sollen. Der antrun-Task paketiert sie
+              zu einer JAR und legt sie in das IT-Verzeichnis, sodass das
+              install-Mojo des IT-Projekts sie ins lokale Repo legen kann. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>create-fixture-jars</id>
+            <phase>pre-integration-test</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <!-- IT 01: changed-file – altes Foo.class im JAR -->
+                <jar destfile="${project.basedir}/src/it/01-changed-file/fixture.jar">
+                  <fileset dir="${project.basedir}/src/it/01-changed-file/fixture-jar-src"/>
+                </jar>
+
+                <!-- IT 02: new-file – leeres JAR (keine Klassen) -->
+                <jar destfile="${project.basedir}/src/it/02-new-file/fixture.jar">
+                  <fileset dir="${project.basedir}/src/it/02-new-file/fixture-jar-src"/>
+                </jar>
+
+                <!-- IT 03: no-changes – identisches Foo.class im JAR -->
+                <jar destfile="${project.basedir}/src/it/03-no-changes/fixture.jar">
+                  <fileset dir="${project.basedir}/src/it/03-no-changes/fixture-jar-src"/>
+                </jar>
+
+                <!-- IT 04: crlf-ignored – MANIFEST.MF mit CRLF im JAR -->
+                <jar destfile="${project.basedir}/src/it/04-crlf-ignored/fixture.jar">
+                  <fileset dir="${project.basedir}/src/it/04-crlf-ignored/fixture-jar-src"/>
+                </jar>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 2. maven-invoker-plugin – führt die IT-Projekte aus -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-invoker-plugin</artifactId>
+        <version>3.6.0</version>
+        <configuration>
+          <!--
+            Jedes Unterverzeichnis unter src/it/ ist ein eigenständiges
+            Maven-Projekt. Der Invoker führt dort 'mvn package' aus und
+            prüft danach das zugehörige verify.groovy-Skript.
+          -->
+          <projectsDirectory>${project.basedir}/src/it</projectsDirectory>
+          <cloneProjectsTo>${project.build.directory}/it</cloneProjectsTo>
+
+          <!-- Das Plugin selbst im lokalen Repo installieren, damit ITs es finden -->
+          <localRepositoryPath>${project.build.directory}/local-repo</localRepositoryPath>
+          <settingsFile>${project.basedir}/src/it/settings.xml</settingsFile>
+
+          <!-- Validierungs-Skripte: src/it/<name>/verify.groovy -->
+          <postBuildHookScript>verify</postBuildHookScript>
+
+          <!-- Goals, die in jedem IT-Projekt ausgeführt werden -->
+          <goals>
+            <goal>install</goal>   <!-- fixture.jar → lokales Repo -->
+            <goal>package</goal>   <!-- compile + hotpatch:make-hotpatch -->
+          </goals>
+
+          <!-- Parallelausführung (optional) -->
+          <parallelThreads>1</parallelThreads>
+
+          <!-- Filter: nur die per -Dinvoker.test angegebenen Projekte -->
+          <invokerTest>${invoker.test}</invokerTest>
+
+          <!-- Fehlerdetails ausgeben -->
+          <showErrors>true</showErrors>
+        </configuration>
+        <executions>
+          <execution>
+            <id>integration-test</id>
+            <goals>
+              <goal>install</goal>          <!-- Plugin ins lokale Repo -->
+              <goal>integration-test</goal> <!-- IT-Projekte ausführen   -->
+              <goal>verify</goal>           <!-- Ergebnisse prüfen        -->
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- 3. JUnit-Platform für Unit-Tests aktivieren -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+
+    </plugins>
+  </build>
+</project>
