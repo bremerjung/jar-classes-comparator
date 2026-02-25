@@ -337,7 +337,7 @@ class HotPatchMakerMojoTest {
         erstelleDatei(classesDir, "a.txt", "Inhalt A");
         erstelleDatei(classesDir, "sub/b.xml", "Inhalt B");
 
-        Set<String> relativePaths = Set.of("a.txt", "sub/b.xml");
+        Set<String> relativePaths = new java.util.HashSet<>(java.util.Arrays.asList("a.txt", "sub/b.xml"));
         File zipFile = tempDir.resolve("output.zip").toFile();
 
         mojo.createZip(classesDir, relativePaths, zipFile);
@@ -357,7 +357,7 @@ class HotPatchMakerMojoTest {
         String expectedContent = "Testinhalt fuer ZIP";
         erstelleDatei(classesDir, "test.txt", expectedContent);
 
-        Set<String> relativePaths = Set.of("test.txt");
+        Set<String> relativePaths = java.util.Collections.singleton("test.txt");
         File zipFile = tempDir.resolve("content-check.zip").toFile();
 
         mojo.createZip(classesDir, relativePaths, zipFile);
@@ -365,7 +365,7 @@ class HotPatchMakerMojoTest {
         try (ZipFile zip = new ZipFile(zipFile)) {
             ZipEntry entry = zip.getEntry("test.txt");
             assertNotNull(entry);
-            byte[] content = zip.getInputStream(entry).readAllBytes();
+            byte[] content = mojo.toByteArray(zip.getInputStream(entry));
             assertEquals(expectedContent, new String(content, StandardCharsets.UTF_8));
         }
     }
@@ -375,7 +375,7 @@ class HotPatchMakerMojoTest {
         Path classesDir = tempDir.resolve("classes-zip-empty");
         Files.createDirectories(classesDir);
 
-        Set<String> relativePaths = Set.of();
+        Set<String> relativePaths = java.util.Collections.emptySet();
         File zipFile = tempDir.resolve("empty.zip").toFile();
 
         mojo.createZip(classesDir, relativePaths, zipFile);
