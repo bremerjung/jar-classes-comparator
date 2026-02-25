@@ -89,43 +89,43 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * und Version auszulesen.
      */
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
-    private MavenProject project;
+    MavenProject project;
 
     /**
      * Die Version des Artefakts, gegen das verglichen werden soll.
      * Wird dieser Parameter nicht angegeben, wird die Projektversion verwendet.
      */
     @Parameter(property = "hotpatch.compareVersion")
-    private String compareVersion;
+    String compareVersion;
 
     /**
      * Das Build-Ausgabeverzeichnis (typischerweise target/classes).
      */
     @Parameter(defaultValue = "${project.build.outputDirectory}", readonly = true, required = true)
-    private File classesDirectory;
+    File classesDirectory;
 
     /**
      * Das Build-Verzeichnis (typischerweise target/).
      */
     @Parameter(defaultValue = "${project.build.directory}", readonly = true, required = true)
-    private File buildDirectory;
+    File buildDirectory;
 
     /**
      * Der Name der Ausgabe-ZIP-Datei.
      */
     @Parameter(defaultValue = "hotpatch.zip", property = "hotpatch.outputFileName")
-    private String outputFileName;
+    String outputFileName;
 
     // -- Aether-Komponenten fuer die Artefakt-Aufloesung --
 
     @Component
-    private RepositorySystem repoSystem;
+    RepositorySystem repoSystem;
 
     @Parameter(defaultValue = "${repositorySystemSession}", readonly = true, required = true)
-    private RepositorySystemSession repoSession;
+    RepositorySystemSession repoSession;
 
     @Parameter(defaultValue = "${project.remoteProjectRepositories}", readonly = true, required = true)
-    private List<RemoteRepository> remoteRepositories;
+    List<RemoteRepository> remoteRepositories;
 
     // -----------------------------------------------
 
@@ -188,7 +188,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @return die aufgeloeste JAR-Datei im lokalen Repository
      * @throws MojoExecutionException falls das Artefakt nicht aufgeloest werden kann
      */
-    private File resolveArtifact(String groupId, String artifactId, String version)
+    File resolveArtifact(String groupId, String artifactId, String version)
             throws MojoExecutionException {
 
         Artifact artifact = new DefaultArtifact(groupId, artifactId, "jar", version);
@@ -225,7 +225,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @return Menge der relativen Pfade (mit "/" als Separator) abweichender Dateien
      * @throws IOException bei Lese- oder Dateisystemfehlern
      */
-    private Set<String> computeDiff(File classesDir, File jarFile) throws IOException {
+    Set<String> computeDiff(File classesDir, File jarFile) throws IOException {
 
         Set<String> diffPaths = new HashSet<>();
 
@@ -281,7 +281,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @return Map mit relativem Pfad als Schluessel und Dateiinhalt als Byte-Array
      * @throws IOException bei Lesefehlern
      */
-    private Map<String, byte[]> readJarContents(File jarFile) throws IOException {
+    Map<String, byte[]> readJarContents(File jarFile) throws IOException {
 
         Map<String, byte[]> contents = new HashMap<>();
 
@@ -326,7 +326,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @param relativePath der zu pruefende relative Pfad (mit "/" als Separator)
      * @return {@code true} wenn der Pfad ausgeschlossen werden soll
      */
-    private boolean isDefaultExcluded(String relativePath) {
+    boolean isDefaultExcluded(String relativePath) {
         for (String pattern : DirectoryScanner.DEFAULTEXCLUDES) {
             if (SelectorUtils.matchPath(pattern, relativePath)) {
                 return true;
@@ -354,7 +354,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @param jarBytes   Byte-Inhalt der Datei aus dem JAR
      * @return {@code true} wenn die Inhalte als gleich gelten, sonst {@code false}
      */
-    private boolean contentEquals(byte[] localBytes, byte[] jarBytes) {
+    boolean contentEquals(byte[] localBytes, byte[] jarBytes) {
         // Schneller Pfad: byte-identische Dateien
         if (Arrays.equals(localBytes, jarBytes)) {
             return true;
@@ -381,7 +381,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @return der vollstaendige Inhalt als Byte-Array
      * @throws IOException bei Lesefehlern
      */
-    private byte[] toByteArray(InputStream is) throws IOException {
+    byte[] toByteArray(InputStream is) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] chunk = new byte[8192];
         int bytesRead;
@@ -405,7 +405,7 @@ public class HotPatchMakerMojo extends AbstractMojo {
      * @param zipFile       die zu erstellende ZIP-Datei
      * @throws IOException bei Schreib- oder Dateisystemfehlern
      */
-    private void createZip(Path classesDir, Set<String> relativePaths, File zipFile) throws IOException {
+    void createZip(Path classesDir, Set<String> relativePaths, File zipFile) throws IOException {
 
         // Sicherstellen, dass das Elternverzeichnis existiert
         zipFile.getParentFile().mkdirs();
