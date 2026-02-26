@@ -85,9 +85,15 @@ public class BranchVersionMojo extends AbstractMojo {
 
     private MavenProject getRootProject() {
         MavenProject root = project;
+
         while (root.getParent() != null) {
+            File parentPom = root.getParent().getFile();
+            if (parentPom == null || !parentPom.exists()) {
+                break; // kein lokales POM → externer Parent, Stop
+            }
             root = root.getParent();
         }
+
         return root;
     }
 
