@@ -18,37 +18,56 @@ import org.eclipse.aether.repository.RemoteRepository;
 import org.eclipse.aether.resolution.ArtifactRequest;
 import org.eclipse.aether.resolution.ArtifactResolutionException;
 import org.eclipse.aether.resolution.ArtifactResult;
-import org.eclipse.jgit.diff.EditList;
-import org.eclipse.jgit.diff.HistogramDiff;
-import org.eclipse.jgit.diff.RawText;
-import org.eclipse.jgit.diff.RawTextComparator;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.eclipse.jgit.diff.EditList;
+import org.eclipse.jgit.diff.HistogramDiff;
+import org.eclipse.jgit.diff.RawText;
+import org.eclipse.jgit.diff.RawTextComparator;
+
 /**
- * Maven-Plugin (Mojo), das den Inhalt von target/classes mit einem
- * JAR-Artefakt vergleicht, das ueber die Maven-Repository-Aufloesung
- * bezogen wird, und aus den abweichenden Dateien ein ZIP-Archiv
- * (Hotpatch) erstellt.
- * <p>
- * Dateien, die sich unterscheiden oder nur lokal vorhanden sind,
+ * Maven-Plugin (Mojo), das entweder den Inhalt von target/classes oder ein
+ * JAR-Artefakt mit einem zweiten JAR-Artefakt vergleicht, das ueber die
+ * Maven-Repository-Aufloesung bezogen wird, und aus den abweichenden Dateien
+ * ein ZIP-Archiv (Hotpatch) erstellt.
+ *
+ * <p>Das Mojo unterstuetzt drei Betriebsmodi:</p>
+ * <ol>
+ *   <li><b>Modus A – Repository-JAR vs. Repository-JAR:</b> Beide Seiten
+ *       werden als Maven-Artefakt aufgeloest. Dazu {@code sourceVersion}
+ *       (die "neue" Seite) und {@code compareVersion} (die "alte" Seite)
+ *       angeben.</li>
+ *   <li><b>Modus B – Lokales JAR vs. Repository-JAR:</b> Ein lokal
+ *       vorhandenes JAR ({@code sourceJar}) wird gegen ein Repository-Artefakt
+ *       ({@code compareVersion}) verglichen.</li>
+ *   <li><b>Modus C – target/classes vs. Repository-JAR (klassisch):</b>
+ *       Wird weder {@code sourceVersion} noch {@code sourceJar} angegeben,
+ *       dient {@code target/classes} als Quelle.</li>
+ * </ol>
+ *
+ * <p>Dateien, die sich unterscheiden oder nur in der Quelle vorhanden sind,
  * werden in das Hotpatch-ZIP aufgenommen. Dateien, die von Mavens
  * Standard-Excludes abgedeckt werden (z.B. SCM-Metadaten wie .git/,
  * .svn/, CVS/ oder temporaere Dateien), werden beim Vergleich
- * automatisch uebersprungen.
- * </p>
- * <p>
- * Die groupId und artifactId des zu vergleichenden Artefakts werden
- * aus dem aktuellen Projekt ausgelesen. Die Version kann per Parameter
- * ueberschrieben werden; standardmaessig wird die Projektversion verwendet.
- * </p>
+ * automatisch uebersprungen.</p>
  *
  * <p>Verwendung in einer POM:</p>
  * <pre>{@code
@@ -64,8 +83,18 @@ import java.util.zip.ZipOutputStream;
  *     </execution>
  *   </executions>
  *   <configuration>
- *     <!-- Optional: Version zum Vergleich angeben -->
- *     <compareVersion>1.0.0</compareVersion>
+ *
+ *     <!-- Modus A: Zwei Repository-JARs vergleichen -->
+ *     <sourceVersion>2.0.0</sourceVersion>    <!-- "neu" -->
+ *     <compareVersion>1.9.0</compareVersion>  <!-- "alt" -->
+ *
+ *     <!-- Modus B: Lokales JAR vs. Repository-JAR -->
+ *     <!-- <sourceJar>${project.basedir}/libs/my-build.jar</sourceJar> -->
+ *     <!-- <compareVersion>1.9.0</compareVersion>                      -->
+ *
+ *     <!-- Modus C: Klassisch – target/classes vs. Repository-JAR -->
+ *     <!-- <compareVersion>1.9.0</compareVersion>                  -->
+ *
  *   </configuration>
  * </plugin>
  * }</pre>
@@ -81,14 +110,40 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
     MavenProject project;
 
     /**
-     * Die Version des Artefakts, gegen das verglichen werden soll.
+     * Die Version des Artefakts, gegen das verglichen werden soll
+     * (die "alte" / Ziel-Seite des Vergleichs).
      * Wird dieser Parameter nicht angegeben, wird die Projektversion verwendet.
      */
     @Parameter(property = "hotpatch.compareVersion")
     String compareVersion;
 
     /**
+     * Version eines Maven-Artefakts (gleiche groupId/artifactId wie das Projekt),
+     * das als Quelle des Vergleichs dient (die "neue" Seite).
+     * <p>
+     * Wird dieser Parameter gesetzt, wird das entsprechende JAR aus dem
+     * Repository aufgeloest und anstelle von {@code target/classes} verwendet.
+     * Hat Vorrang vor {@code sourceJar}.
+     * </p>
+     */
+    @Parameter(property = "hotpatch.sourceVersion")
+    String sourceVersion;
+
+    /**
+     * Pfad zu einem lokalen JAR, das als Vergleichsquelle (die "neue" Seite)
+     * verwendet wird.
+     * <p>
+     * Wird dieser Parameter gesetzt und {@code sourceVersion} ist <em>nicht</em>
+     * gesetzt, wird dieses lokale JAR anstelle von {@code target/classes} als
+     * Quelle verwendet.
+     * </p>
+     */
+    @Parameter(property = "hotpatch.sourceJar")
+    File sourceJar;
+
+    /**
      * Das Build-Ausgabeverzeichnis (typischerweise target/classes).
+     * Wird nur im klassischen Modus (Modus C) verwendet.
      */
     @Parameter(defaultValue = "${project.build.outputDirectory}", readonly = true, required = true)
     File classesDirectory;
@@ -121,30 +176,52 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
 
-        // 1. Koordinaten ermitteln
-        String groupId = project.getGroupId();
+        String groupId    = project.getGroupId();
         String artifactId = project.getArtifactId();
-        String version = (compareVersion != null && !compareVersion.trim().isEmpty())
+        String targetVersion = (compareVersion != null && !compareVersion.trim().isEmpty())
                 ? compareVersion.trim()
                 : project.getVersion();
 
-        getLog().info("Hotpatch: Vergleiche target/classes mit Artefakt "
-                + groupId + ":" + artifactId + ":" + version);
-
-        // 2. JAR aus dem Repository aufloesen
-        File jarFile = resolveArtifact(groupId, artifactId, version);
-        getLog().info("Artefakt-JAR aufgeloest: " + jarFile.getAbsolutePath());
-
-        // 3. Pruefen, ob target/classes existiert
-        if (!classesDirectory.isDirectory()) {
-            throw new MojoFailureException(
-                    "Classes-Verzeichnis existiert nicht: " + classesDirectory.getAbsolutePath()
-                            + " – wurde 'compile' ausgefuehrt?");
-        }
-
-        // 4. Vergleich durchfuehren
         try {
-            Set<String> diffFiles = computeDiff(classesDirectory, jarFile);
+            // --- Quell-Inhalte bestimmen (neue / linke Seite) ---
+            Map<String, byte[]> sourceContents;
+
+            if (sourceVersion != null && !sourceVersion.trim().isEmpty()) {
+                // Modus A: JAR aus dem Repository als Quelle
+                File srcJar = resolveArtifact(groupId, artifactId, sourceVersion.trim());
+                getLog().info("Hotpatch [Modus A]: Repository-JAR vs. Repository-JAR");
+                getLog().info("  Quelle (neu) : " + srcJar.getAbsolutePath());
+                sourceContents = readJarContents(srcJar);
+
+            } else if (sourceJar != null) {
+                // Modus B: Lokale JAR-Datei als Quelle
+                if (!sourceJar.isFile()) {
+                    throw new MojoFailureException(
+                            "sourceJar nicht gefunden: " + sourceJar.getAbsolutePath());
+                }
+                getLog().info("Hotpatch [Modus B]: Lokales JAR vs. Repository-JAR");
+                getLog().info("  Quelle (neu) : " + sourceJar.getAbsolutePath());
+                sourceContents = readJarContents(sourceJar);
+
+            } else {
+                // Modus C: Klassisch – target/classes als Quelle
+                if (!classesDirectory.isDirectory()) {
+                    throw new MojoFailureException(
+                            "Classes-Verzeichnis existiert nicht: "
+                                    + classesDirectory.getAbsolutePath()
+                                    + " – wurde 'compile' ausgefuehrt?");
+                }
+                getLog().info("Hotpatch [Modus C]: target/classes vs. Repository-JAR");
+                getLog().info("  Quelle (neu) : " + classesDirectory.getAbsolutePath());
+                sourceContents = readDirectoryContents(classesDirectory.toPath());
+            }
+
+            // --- Ziel-JAR aufloesen (alte / rechte Seite) ---
+            File targetJar = resolveArtifact(groupId, artifactId, targetVersion);
+            getLog().info("  Ziel  (alt)  : " + targetJar.getAbsolutePath());
+
+            Map<String, byte[]> targetContents = readJarContents(targetJar);
+            Set<String> diffFiles = computeDiffFromMaps(sourceContents, targetContents);
 
             if (diffFiles.isEmpty()) {
                 getLog().info("Keine Unterschiede gefunden – es wird kein Hotpatch erstellt.");
@@ -153,10 +230,8 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
 
             getLog().info(diffFiles.size() + " abweichende Datei(en) gefunden.");
 
-            // 5. Hotpatch-ZIP erstellen
             File zipFile = new File(buildDirectory, outputFileName);
-            createZip(classesDirectory.toPath(), diffFiles, zipFile);
-
+            createZipFromMap(sourceContents, diffFiles, zipFile);
             getLog().info("Hotpatch erstellt: " + zipFile.getAbsolutePath());
 
         } catch (IOException e) {
@@ -196,65 +271,36 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
     }
 
     // ------------------------------------------------------------------ //
-    //  Diff-Logik
+    //  Inhalte einlesen
     // ------------------------------------------------------------------ //
 
     /**
-     * Ermittelt, welche Dateien in {@code classesDir} sich von denen im
-     * uebergebenen JAR unterscheiden oder nur lokal vorhanden sind.
+     * Liest alle Dateien aus einem Verzeichnis in eine Map
+     * (relativer Pfad → Byte-Inhalt).
      * <p>
-     * Zum Scannen der lokalen Dateien wird {@link DirectoryScanner} aus
-     * Plexus Utils verwendet. Ueber {@code addDefaultExcludes()} werden
-     * Mavens Standard-Excludes (SCM-Metadaten, temporaere Dateien etc.)
-     * automatisch vom Vergleich ausgeschlossen.
+     * Verwendet {@link DirectoryScanner} mit {@code addDefaultExcludes()},
+     * sodass SCM-Metadaten und temporaere Dateien automatisch uebersprungen
+     * werden – identisches Verhalten wie beim JAR-Einlesen.
      * </p>
      *
-     * @param classesDir das lokale classes-Verzeichnis (target/classes)
-     * @param jarFile    die aufgeloeste JAR-Datei zum Vergleich
-     * @return Menge der relativen Pfade (mit "/" als Separator) abweichender Dateien
-     * @throws IOException bei Lese- oder Dateisystemfehlern
+     * @param baseDir das einzulesende Verzeichnis (z.B. target/classes)
+     * @return Map mit relativem Pfad als Schluessel und Dateiinhalt als Byte-Array
+     * @throws IOException bei Lesefehlern
      */
-    Set<String> computeDiff(File classesDir, File jarFile) throws IOException {
+    Map<String, byte[]> readDirectoryContents(Path baseDir) throws IOException {
+        Map<String, byte[]> contents = new HashMap<>();
 
-        Set<String> diffPaths = new HashSet<>();
-
-        // Alle Eintraege aus dem JAR in den Speicher lesen (Byte-Arrays),
-        // dabei Standard-Excludes anwenden
-        Map<String, byte[]> jarContents = readJarContents(jarFile);
-
-        // target/classes mit DirectoryScanner durchlaufen;
-        // Standard-Excludes (SCM-Metadaten, temp. Dateien etc.) werden
-        // automatisch uebersprungen
         DirectoryScanner scanner = new DirectoryScanner();
-        scanner.setBasedir(classesDir);
+        scanner.setBasedir(baseDir.toFile());
         scanner.setIncludes(new String[]{"**"});
         scanner.addDefaultExcludes();
         scanner.scan();
 
-        Path classesPath = classesDir.toPath();
-
-        for (String includedFile : scanner.getIncludedFiles()) {
-            // DirectoryScanner liefert plattformabhaengige Separatoren;
-            // fuer den Vergleich mit JAR-Eintraegen auf "/" normalisieren
-            String relativePath = includedFile.replace('\\', '/');
-
-            byte[] localBytes = Files.readAllBytes(classesPath.resolve(includedFile));
-            byte[] jarBytes = jarContents.get(relativePath);
-
-            if (jarBytes == null) {
-                // Datei existiert nur in target/classes (fehlt im JAR)
-                getLog().debug("NEU       : " + relativePath);
-                diffPaths.add(relativePath);
-            } else if (!contentEquals(localBytes, jarBytes)) {
-                // Dateiinhalt unterscheidet sich
-                getLog().debug("GEAENDERT : " + relativePath);
-                diffPaths.add(relativePath);
-            } else {
-                getLog().debug("UNVERAEND.: " + relativePath);
-            }
+        for (String file : scanner.getIncludedFiles()) {
+            String key = file.replace('\\', '/');
+            contents.put(key, Files.readAllBytes(baseDir.resolve(file)));
         }
-
-        return diffPaths;
+        return contents;
     }
 
     /**
@@ -300,6 +346,71 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
     }
 
     // ------------------------------------------------------------------ //
+    //  Diff-Logik
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Vergleicht zwei bereits eingelesene Maps (relativer Pfad → Bytes) und
+     * gibt die Menge der Pfade zurueck, die sich unterscheiden oder nur in der
+     * Quelle vorhanden sind.
+     * <p>
+     * Dateien, die nur im Ziel (target), aber nicht in der Quelle existieren,
+     * werden als geloescht betrachtet und <em>nicht</em> in den Patch
+     * aufgenommen.
+     * </p>
+     *
+     * @param source  Inhalte der neuen / linken Seite
+     * @param target  Inhalte der alten / rechten Seite
+     * @return Menge der relativen Pfade abweichender Dateien
+     */
+    Set<String> computeDiffFromMaps(Map<String, byte[]> source,
+                                    Map<String, byte[]> target) {
+        Set<String> diff = new HashSet<>();
+
+        for (Map.Entry<String, byte[]> entry : source.entrySet()) {
+            String path     = entry.getKey();
+            byte[] srcBytes = entry.getValue();
+            byte[] tgtBytes = target.get(path);
+
+            if (tgtBytes == null) {
+                getLog().debug("NEU       : " + path);
+                diff.add(path);
+            } else if (!contentEquals(srcBytes, tgtBytes)) {
+                getLog().debug("GEAENDERT : " + path);
+                diff.add(path);
+            } else {
+                getLog().debug("UNVERAEND.: " + path);
+            }
+        }
+
+        return diff;
+    }
+
+    /**
+     * Ermittelt, welche Dateien in {@code classesDir} sich von denen im
+     * uebergebenen JAR unterscheiden oder nur lokal vorhanden sind.
+     * <p>
+     * Diese Methode bleibt als kompatibler Einstiegspunkt erhalten und
+     * delegiert intern an {@link #readDirectoryContents(Path)} und
+     * {@link #computeDiffFromMaps(Map, Map)}.
+     * </p>
+     *
+     * @param classesDir das lokale classes-Verzeichnis (target/classes)
+     * @param jarFile    die aufgeloeste JAR-Datei zum Vergleich
+     * @return Menge der relativen Pfade abweichender Dateien
+     * @throws IOException bei Lese- oder Dateisystemfehlern
+     * @deprecated Wird intern nicht mehr direkt aufgerufen; stattdessen werden
+     *             {@link #readDirectoryContents(Path)}, {@link #readJarContents(File)}
+     *             und {@link #computeDiffFromMaps(Map, Map)} verwendet.
+     */
+    @Deprecated
+    Set<String> computeDiff(File classesDir, File jarFile) throws IOException {
+        return computeDiffFromMaps(
+                readDirectoryContents(classesDir.toPath()),
+                readJarContents(jarFile));
+    }
+
+    // ------------------------------------------------------------------ //
     //  Hilfsmethoden
     // ------------------------------------------------------------------ //
 
@@ -308,8 +419,7 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
      * <p>
      * Verwendet {@link SelectorUtils#matchPath(String, String)} aus Plexus Utils,
      * um den Pfad gegen jedes Pattern aus {@link DirectoryScanner#DEFAULTEXCLUDES}
-     * zu testen. Damit wird dieselbe Exclude-Logik wie beim {@link DirectoryScanner}
-     * auf JAR-Eintraege angewendet.
+     * zu testen.
      * </p>
      *
      * @param relativePath der zu pruefende relative Pfad (mit "/" als Separator)
@@ -333,14 +443,12 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
      *       ueber {@link Arrays#equals}</li>
      *   <li><b>Textdateien</b>: zeilenweiser Vergleich mit JGits {@link HistogramDiff}
      *       und {@link RawTextComparator#WS_IGNORE_TRAILING}. Dadurch werden
-     *       \r\n und \n als gleichwertig behandelt (nachgestellte Whitespace-Zeichen
-     *       inkl. \r werden ignoriert)</li>
+     *       \r\n und \n als gleichwertig behandelt.</li>
      * </ul>
-     * Damit entfaellt die Pflege einer manuellen Liste von Textdatei-Endungen.
      * </p>
      *
-     * @param localBytes Byte-Inhalt der lokalen Datei (target/classes)
-     * @param jarBytes   Byte-Inhalt der Datei aus dem JAR
+     * @param localBytes Byte-Inhalt der Quelle
+     * @param jarBytes   Byte-Inhalt des Ziels
      * @return {@code true} wenn die Inhalte als gleich gelten, sonst {@code false}
      */
     boolean contentEquals(byte[] localBytes, byte[] jarBytes) {
@@ -357,8 +465,9 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
 
         // Text-Vergleich: Zeilenende-Unterschiede (\r\n vs. \n) ignorieren
         RawText localText = new RawText(localBytes);
-        RawText jarText = new RawText(jarBytes);
-        EditList edits = new HistogramDiff().diff(RawTextComparator.WS_IGNORE_TRAILING, localText, jarText);
+        RawText jarText   = new RawText(jarBytes);
+        EditList edits = new HistogramDiff().diff(
+                RawTextComparator.WS_IGNORE_TRAILING, localText, jarText);
         return edits.isEmpty();
     }
 
@@ -385,18 +494,52 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
     // ------------------------------------------------------------------ //
 
     /**
-     * Erstellt ein ZIP-Archiv (Hotpatch), das nur die Dateien enthaelt,
-     * deren relative Pfade in {@code relativePaths} aufgefuehrt sind.
-     * Die Dateien werden aus {@code classesDir} gelesen.
+     * Erstellt ein ZIP-Archiv (Hotpatch) direkt aus der In-Memory-Map der
+     * Quelldateien. Kein Dateisystemzugriff auf {@code target/classes}
+     * erforderlich – funktioniert daher fuer alle drei Modi gleichermassen.
+     *
+     * @param source        Map der Quellinhalte (relativer Pfad → Bytes)
+     * @param relativePaths Menge der in das ZIP aufzunehmenden Pfade
+     * @param zipFile       die zu erstellende ZIP-Datei
+     * @throws IOException bei Schreib- oder Dateisystemfehlern
+     */
+    void createZipFromMap(Map<String, byte[]> source,
+                          Set<String> relativePaths,
+                          File zipFile) throws IOException {
+
+        zipFile.getParentFile().mkdirs();
+
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+            for (String relPath : relativePaths) {
+                byte[] data = source.get(relPath);
+                if (data == null) {
+                    getLog().warn("Kein Inhalt fuer Pfad verfuegbar: " + relPath);
+                    continue;
+                }
+                zos.putNextEntry(new ZipEntry(relPath));
+                zos.write(data);
+                zos.closeEntry();
+            }
+        }
+    }
+
+    /**
+     * Erstellt ein ZIP-Archiv aus Dateien im Dateisystem.
+     * <p>
+     * Diese Methode bleibt als kompatibler Fallback erhalten, wird intern
+     * jedoch nicht mehr aufgerufen. Stattdessen wird {@link #createZipFromMap}
+     * verwendet, das keine Dateisystemzugriffe benoetigt.
+     * </p>
      *
      * @param classesDir    das Quellverzeichnis (target/classes)
      * @param relativePaths Menge der relativen Pfade der zu packenden Dateien
      * @param zipFile       die zu erstellende ZIP-Datei
      * @throws IOException bei Schreib- oder Dateisystemfehlern
+     * @deprecated Ersetzt durch {@link #createZipFromMap(Map, Set, File)}.
      */
+    @Deprecated
     void createZip(Path classesDir, Set<String> relativePaths, File zipFile) throws IOException {
 
-        // Sicherstellen, dass das Elternverzeichnis existiert
         zipFile.getParentFile().mkdirs();
 
         try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
@@ -406,7 +549,6 @@ public class HotPatchMakerMojo2 extends AbstractMojo {
                     getLog().warn("Datei vor dem Packen verschwunden: " + relPath);
                     continue;
                 }
-
                 zos.putNextEntry(new ZipEntry(relPath));
                 Files.copy(sourceFile, zos);
                 zos.closeEntry();
