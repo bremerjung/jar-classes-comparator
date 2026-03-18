@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Konfiguration
+BASE_URL="https://deine-instanz.atlassian.net/wiki"
+PAGE_ID="123456789"
+PAT="dein-personal-access-token"
+
+# Aktuelle Version der Seite holen
+CURRENT=$(curl -s \
+  -H "Authorization: Bearer ${PAT}" \
+  -H "Accept: application/json" \
+  "${BASE_URL}/rest/api/content/${PAGE_ID}?expand=version,body.storage")
+
+VERSION=$(echo "$CURRENT" | jq -r '.version.number')
+TITLE=$(echo "$CURRENT" | jq -r '.title')
+NEW_VERSION=$((VERSION + 1))
+
+# Neuer Seiteninhalt (Confluence Storage Format = XHTML-ähnlich)
+NEW_BODY="<p>Aktualisiert am $(date '+%Y-%m-%d %H:%M:%S')</p>"
+
+# Seite aktualisieren
+curl -s -X PUT \
+  -H "Authorization: Bearer ${PAT}" \
+  -H "Content-Type: application/json" \
+  "${BASE_URL}/rest/api/content/${PAGE_ID}" \
+  -d @- <<EOF
+{
+  "version": { "number": ${NEW_VERSION} },
+  "title": "${TITLE}",
+  "type": "page",
+  "body": {
+    "storage": {
+      "value": "${NEW_BODY}",
+      "representation": "storage"
+    }
+  }
+}
+EOF
