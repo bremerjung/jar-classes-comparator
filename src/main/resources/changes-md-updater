@@ -1,4 +1,5 @@
 #!/bin/bash
+export LC_ALL=en_US.UTF-8
 
 # Konfiguration
 BASE_URL="https://deine-instanz.atlassian.net/wiki"
@@ -11,12 +12,10 @@ CURRENT=$(curl -s \
   -H "Accept: application/json" \
   "${BASE_URL}/rest/api/content/${PAGE_ID}?expand=version,body.storage")
 
-# Version extrahieren: "number":5 aus dem version-Block
-VERSION=$(echo "$CURRENT" | grep -oP '"version"\s*:\s*\{[^}]*"number"\s*:\s*\K[0-9]+')
+# Version und Titel extrahieren
+VERSION=$(echo "$CURRENT" | awk -F'"number":' '{print $2}' | awk -F'[^0-9]' '{print $1}')
+TITLE=$(echo "$CURRENT" | awk -F'"title":"' '{print $2}' | awk -F'"' '{print $1}')
 NEW_VERSION=$((VERSION + 1))
-
-# Titel extrahieren: erstes "title":"..." im JSON
-TITLE=$(echo "$CURRENT" | grep -oP '"title"\s*:\s*"\K[^"]+' | head -1)
 
 # Neuer Seiteninhalt
 NEW_BODY="<p>Aktualisiert am $(date '+%Y-%m-%d %H:%M:%S')</p>"
