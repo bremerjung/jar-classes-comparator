@@ -11,11 +11,14 @@ CURRENT=$(curl -s \
   -H "Accept: application/json" \
   "${BASE_URL}/rest/api/content/${PAGE_ID}?expand=version,body.storage")
 
-VERSION=$(echo "$CURRENT" | jq -r '.version.number')
-TITLE=$(echo "$CURRENT" | jq -r '.title')
+# Version extrahieren: "number":5 aus dem version-Block
+VERSION=$(echo "$CURRENT" | grep -oP '"version"\s*:\s*\{[^}]*"number"\s*:\s*\K[0-9]+')
 NEW_VERSION=$((VERSION + 1))
 
-# Neuer Seiteninhalt (Confluence Storage Format = XHTML-ähnlich)
+# Titel extrahieren: erstes "title":"..." im JSON
+TITLE=$(echo "$CURRENT" | grep -oP '"title"\s*:\s*"\K[^"]+' | head -1)
+
+# Neuer Seiteninhalt
 NEW_BODY="<p>Aktualisiert am $(date '+%Y-%m-%d %H:%M:%S')</p>"
 
 # Seite aktualisieren
