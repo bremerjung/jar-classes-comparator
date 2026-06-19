@@ -1,0 +1,27 @@
+<plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>gwt-maven-plugin</artifactId>
+                <version>2.10.0</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <!--
+                        extraJvmArgs: Fuer Java 17+ ist Strong Encapsulation aktiv.
+                        GWT 2.10+ laeuft auf Java 25 ohne zusaetzliche Flags,
+                        aber diese Konfiguration zeigt das Muster fuer aeltere GWT-Versionen.
+                    -->
+                    <extraJvmArgs>
+                        --add-opens=java.base/java.lang=ALL-UNNAMED
+                        --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+                        --add-opens=java.base/java.util=ALL-UNNAMED
+                        --add-opens=java.base/java.io=ALL-UNNAMED
+                    </extraJvmArgs>
+                    <style>OBFUSCATED</style>
+                    <failOnError>true</failOnError>
+                </configuration>
+            </plugin>
